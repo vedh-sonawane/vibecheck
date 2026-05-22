@@ -2,6 +2,8 @@ import { App } from '@slack/bolt';
 import dotenv from 'dotenv';
 import { storeUser, storeMessageMetadata, getUserRecentPattern } from './database/queries';
 import { getUserMessageHistory } from './services/rts';
+import { analyzeUserHealth } from './services/patternAnalyzer';
+import { buildUserHealthReport, buildTeamDashboard } from './services/dashboard';
 
 dotenv.config();
 
@@ -12,43 +14,98 @@ const app = new App({
   appToken: process.env.SLACK_APP_TOKEN,
 });
 
-// Enhanced /vibecheck command
+// Enhanced /vibecheck with health analysis
 app.command('/vibecheck', async ({ command, ack, respond, client }) => {
   await ack();
   
   try {
+    // Parse command text for options
+    const args = command.text.trim().split(' ');
+    const option = args[0];
+    
+    // /vibecheck team - Show team dashboard
+    if (option === 'team') {
+      const dashboardBlocks = await buildTeamDashboard();
+      
+      await respond({
+        text: 'Team Health Dashboard',
+        blocks: dashboardBlocks
+      });
+      return;
+    }
+    
+    // /vibecheck @user - Check specific user
+    let targetUserId = command.user_id;
+    if (option && option.startsWith('<@')) {
+      targetUserId = option.replace('<@', '').replace('>', '').split('|')[0];
+    }
+    
     // Get user info
-    const userInfo = await client.users.info({ user: command.user_id });
+    const userInfo = await client.users.info({ user: targetUserId });
     const user = userInfo.user;
     
-    // Store user
-    await storeUser(
-      command.user_id,
-      user?.name,
-      user?.real_name
-    );
-    
-    // Get recent pattern
-    const pattern = await getUserRecentPattern(command.user_id, 7);
-    
-    const totalMessages = pattern.reduce((sum, day) => sum + parseInt(day.message_count), 0);
-    const lateNightMessages = pattern.reduce((sum, day) => sum + parseInt(day.late_night_count), 0);
+    // Analyze health
+    const health = await analyzeUserHealth(targetUserId);
+    const reportBlocks = buildUserHealthReport(health);
     
     await respond({
-      text: `Vibe Check for <@${command.user_id}>`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*Vibe Check Status:* ✅ Online\n\n*Your 7-Day Pattern:*\n• Messages sent: ${totalMessages}\n• Late-night messages (10pm-6am): ${lateNightMessages}\n• Pattern: ${lateNightMessages > 5 ? '⚠️ High late-night activity' : '☀️ Healthy pattern'}`
-          }
-        }
-      ]
+      text: `Health Report for ${user?.real_name || user?.name}`,
+      blocks: reportBlocks
     });
+    
   } catch (error) {
     console.error('Error in /vibecheck:', error);
-    await respond('Something went wrong! Check logs.');
+    await respond({
+      text: '❌ Error generating health report. Make sure I have enough data!',
+      response_type: 'ephemeral'
+    });
+  }
+});
+
+// New command: /vibecheck-alert - Manual alert test
+app.command('/vibecheck-alert', async ({ command, ack, respond }) => {
+  await ack();
+  
+  try {
+    const health = await analyzeUserHealth(command.user_id);
+    
+    if (health.alerts.length === 0) {
+      await respond({
+        text: '✅ No alerts detected. Your patterns look healthy!',
+        response_type: 'ephemeral'
+      });
+      return;
+    }
+    
+    const alertBlocks: any[] = [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: `⚠️ ${health.alerts.length} Alert(s) Detected`
+        }
+      }
+    ];
+    
+    health.alerts.forEach(alert => {
+      alertBlocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*${alert.type}*\n${alert.description}\n_Severity: ${alert.severity}_`
+        }
+      });
+    });
+    
+    await respond({
+      text: 'Health Alerts',
+      blocks: alertBlocks,
+      response_type: 'ephemeral'
+    });
+    
+  } catch (error) {
+    console.error('Error checking alerts:', error);
+    await respond('Error checking alerts!');
   }
 });
 
@@ -56,17 +113,14 @@ app.command('/vibecheck', async ({ command, ack, respond, client }) => {
 app.message(async ({ message, client }) => {
   if (message.subtype === undefined && 'user' in message) {
     try {
-      // Get user info
       const userInfo = await client.users.info({ user: message.user });
       
-      // Store user
       await storeUser(
         message.user,
         userInfo.user?.name,
         userInfo.user?.real_name
       );
       
-      // Store message metadata (NO CONTENT!)
       await storeMessageMetadata({
         userId: message.user,
         channelId: message.channel,
@@ -75,52 +129,45 @@ app.message(async ({ message, client }) => {
         reactionCount: 0
       });
       
-      console.log(`✅ Stored metadata for message from ${userInfo.user?.name}`);
+      console.log(`✅ Stored metadata for ${userInfo.user?.name}`);
     } catch (error) {
       console.error('Error storing message:', error);
     }
   }
 });
 
-// Background job: Backfill historical data
+// Background job: Backfill data
 async function backfillHistoricalData() {
-  console.log('🔄 Starting historical data backfill...');
+  console.log('🔄 Starting backfill...');
   
   try {
-    // Get all workspace users
     const usersResult = await app.client.users.list({});
     const users = usersResult.members?.filter(u => !u.is_bot && !u.deleted) || [];
     
-    for (const user of users.slice(0, 5)) { // Limit to 5 users for now
+    for (const user of users.slice(0, 5)) {
       if (!user.id) continue;
       
-      console.log(`Backfilling data for ${user.name}...`);
+      console.log(`Backfilling ${user.name}...`);
       
-      // Get their message history via RTS
       const messages = await getUserMessageHistory(user.id, 30);
       
-      console.log(`Found ${messages.length} messages for ${user.name}`);
-      
-      // Store user
       await storeUser(user.id, user.name, user.real_name);
       
-      // Store each message's metadata
       for (const msg of messages) {
         if (msg.ts) {
-       await storeMessageMetadata({
-  userId: user.id,
-  channelId: msg.channel?.id || 'unknown',
-  timestamp: msg.ts,
-  threadTs: (msg as any).thread_ts,
-  reactionCount: 0,
-});
+          await storeMessageMetadata({
+            userId: user.id,
+            channelId: msg.channel?.id || 'unknown',
+            timestamp: msg.ts,
+            threadTs: (msg as any).thread_ts,
+          });
         }
       }
     }
     
-    console.log('✅ Historical data backfill complete!');
+    console.log('✅ Backfill complete!');
   } catch (error) {
-    console.error('Error in backfill:', error);
+    console.error('Backfill error:', error);
   }
 }
 
@@ -129,6 +176,24 @@ async function backfillHistoricalData() {
   await app.start(port);
   console.log(`⚡️ Vibe Check is running on port ${port}`);
   
-  // Run backfill on startup (comment out after first run)
-  setTimeout(backfillHistoricalData, 5000);
+  // Run backfill once (comment out after first run)
+  // setTimeout(backfillHistoricalData, 5000);
 })();
+
+import { sendManagerAlerts } from './services/managerAlerts';
+
+// Run manager alerts every 24 hours
+setInterval(async () => {
+  console.log('🔔 Running scheduled manager alerts...');
+  await sendManagerAlerts(app);
+}, 24 * 60 * 60 * 1000); // 24 hours
+
+// Add at the top, after app initialization
+app.error(async (error) => {
+  console.error('⚠️ Slack app error:', error);
+});
+
+// Wrap pattern detection in try-catch
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
+});
