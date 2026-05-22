@@ -3,7 +3,7 @@
 Emotional weather system for Slack teams. Detects burnout, tension, and engagement drops before they become problems.
 
 ## Built For
-Slack Agent Builder Challenge 2026
+Slack Agent Builder Challenge 2026 (Hackathon)
 
 ## Tech Stack
 - Slack Bolt Framework
