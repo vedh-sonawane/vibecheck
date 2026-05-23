@@ -1,9 +1,11 @@
 import { App } from '@slack/bolt';
 import dotenv from 'dotenv';
-import { storeUser, storeMessageMetadata, getUserRecentPattern } from './database/queries';
+import { storeUser, storeMessageMetadata } from './database/queries';
 import { getUserMessageHistory } from './services/rts';
 import { analyzeUserHealth } from './services/patternAnalyzer';
 import { buildUserHealthReport, buildTeamDashboard } from './services/dashboard';
+import { createTeamHealthCanvas } from './services/canvasBuilder';
+import { sendManagerAlerts } from './services/managerAlerts';
 
 dotenv.config();
 
@@ -14,113 +16,97 @@ const app = new App({
   appToken: process.env.SLACK_APP_TOKEN,
 });
 
-// Enhanced /vibecheck with health analysis
 app.command('/vibecheck', async ({ command, ack, respond, client }) => {
   await ack();
-  
+
   try {
-    // Parse command text for options
     const args = command.text.trim().split(' ');
     const option = args[0];
-    
-    // /vibecheck team - Show team dashboard
-    if (option === 'team') {
-      const dashboardBlocks = await buildTeamDashboard();
-      
-      await respond({
+
+    if (option === 'dashboard') {
+      await respond({ text: '📊 Creating team health dashboard...', response_type: 'ephemeral' });
+
+      // Pass user ID so canvas is owned by and shared with the user
+      const canvasId = await createTeamHealthCanvas(command.user_id);
+
+      await client.chat.postMessage({
+        channel: command.channel_id,
         text: 'Team Health Dashboard',
-        blocks: dashboardBlocks
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `📊 *Team Health Dashboard Created!*\n\n✅ Canvas ID: \`${canvasId}\`\n\n*To view it:*\n1. Click the 📄 *Canvases* icon in your Slack sidebar\n2. Look under *"Shared with you"* or *"Created by you"*\n3. Look for *"Team Health Dashboard"*`
+            }
+          }
+        ]
       });
-      return;
+
+    } else if (option === 'team') {
+      const dashboardBlocks = await buildTeamDashboard();
+      await respond({ text: 'Team Health Dashboard', blocks: dashboardBlocks });
+
+    } else {
+      let targetUserId = command.user_id;
+      if (option && option.startsWith('<@')) {
+        targetUserId = option.replace('<@', '').replace('>', '').split('|')[0];
+      }
+
+      const userInfo = await client.users.info({ user: targetUserId });
+      const user = userInfo.user;
+      const health = await analyzeUserHealth(targetUserId);
+      const reportBlocks = buildUserHealthReport(health);
+
+      await respond({
+        text: `Health Report for ${user?.real_name || user?.name}`,
+        blocks: reportBlocks
+      });
     }
-    
-    // /vibecheck @user - Check specific user
-    let targetUserId = command.user_id;
-    if (option && option.startsWith('<@')) {
-      targetUserId = option.replace('<@', '').replace('>', '').split('|')[0];
-    }
-    
-    // Get user info
-    const userInfo = await client.users.info({ user: targetUserId });
-    const user = userInfo.user;
-    
-    // Analyze health
-    const health = await analyzeUserHealth(targetUserId);
-    const reportBlocks = buildUserHealthReport(health);
-    
-    await respond({
-      text: `Health Report for ${user?.real_name || user?.name}`,
-      blocks: reportBlocks
-    });
-    
+
   } catch (error) {
     console.error('Error in /vibecheck:', error);
-    await respond({
-      text: '❌ Error generating health report. Make sure I have enough data!',
-      response_type: 'ephemeral'
-    });
+    await respond({ text: '❌ Something went wrong!', response_type: 'ephemeral' });
   }
 });
 
-// New command: /vibecheck-alert - Manual alert test
 app.command('/vibecheck-alert', async ({ command, ack, respond }) => {
   await ack();
-  
+
   try {
     const health = await analyzeUserHealth(command.user_id);
-    
+
     if (health.alerts.length === 0) {
-      await respond({
-        text: '✅ No alerts detected. Your patterns look healthy!',
-        response_type: 'ephemeral'
-      });
+      await respond({ text: '✅ No alerts detected. Your patterns look healthy!', response_type: 'ephemeral' });
       return;
     }
-    
+
     const alertBlocks: any[] = [
-      {
-        type: 'header',
-        text: {
-          type: 'plain_text',
-          text: `⚠️ ${health.alerts.length} Alert(s) Detected`
-        }
-      }
+      { type: 'header', text: { type: 'plain_text', text: `⚠️ ${health.alerts.length} Alert(s) Detected` } }
     ];
-    
+
     health.alerts.forEach(alert => {
       alertBlocks.push({
         type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*${alert.type}*\n${alert.description}\n_Severity: ${alert.severity}_`
-        }
+        text: { type: 'mrkdwn', text: `*${alert.type}*\n${alert.description}\n_Severity: ${alert.severity}_` }
       });
     });
-    
-    await respond({
-      text: 'Health Alerts',
-      blocks: alertBlocks,
-      response_type: 'ephemeral'
-    });
-    
+
+    await respond({ text: 'Health Alerts', blocks: alertBlocks, response_type: 'ephemeral' });
+
   } catch (error) {
     console.error('Error checking alerts:', error);
     await respond('Error checking alerts!');
   }
 });
 
-// Listen for messages and store metadata
 app.message(async ({ message, client }) => {
   if (message.subtype === undefined && 'user' in message) {
     try {
       const userInfo = await client.users.info({ user: message.user });
-      
-      await storeUser(
-        message.user,
-        userInfo.user?.name,
-        userInfo.user?.real_name
-      );
-      
+
+      await storeUser(message.user, userInfo.user?.name, userInfo.user?.real_name);
+
       await storeMessageMetadata({
         userId: message.user,
         channelId: message.channel,
@@ -128,7 +114,7 @@ app.message(async ({ message, client }) => {
         threadTs: message.thread_ts,
         reactionCount: 0
       });
-      
+
       console.log(`✅ Stored metadata for ${userInfo.user?.name}`);
     } catch (error) {
       console.error('Error storing message:', error);
@@ -136,64 +122,21 @@ app.message(async ({ message, client }) => {
   }
 });
 
-// Background job: Backfill data
-async function backfillHistoricalData() {
-  console.log('🔄 Starting backfill...');
-  
-  try {
-    const usersResult = await app.client.users.list({});
-    const users = usersResult.members?.filter(u => !u.is_bot && !u.deleted) || [];
-    
-    for (const user of users.slice(0, 5)) {
-      if (!user.id) continue;
-      
-      console.log(`Backfilling ${user.name}...`);
-      
-      const messages = await getUserMessageHistory(user.id, 30);
-      
-      await storeUser(user.id, user.name, user.real_name);
-      
-      for (const msg of messages) {
-        if (msg.ts) {
-          await storeMessageMetadata({
-            userId: user.id,
-            channelId: msg.channel?.id || 'unknown',
-            timestamp: msg.ts,
-            threadTs: (msg as any).thread_ts,
-          });
-        }
-      }
-    }
-    
-    console.log('✅ Backfill complete!');
-  } catch (error) {
-    console.error('Backfill error:', error);
-  }
-}
+app.error(async (error) => {
+  console.error('⚠️ Slack app error:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
+});
+
+setInterval(async () => {
+  console.log('🔔 Running scheduled manager alerts...');
+  await sendManagerAlerts(app);
+}, 24 * 60 * 60 * 1000);
 
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
   console.log(`⚡️ Vibe Check is running on port ${port}`);
-  
-  // Run backfill once (comment out after first run)
-  // setTimeout(backfillHistoricalData, 5000);
 })();
-
-import { sendManagerAlerts } from './services/managerAlerts';
-
-// Run manager alerts every 24 hours
-setInterval(async () => {
-  console.log('🔔 Running scheduled manager alerts...');
-  await sendManagerAlerts(app);
-}, 24 * 60 * 60 * 1000); // 24 hours
-
-// Add at the top, after app initialization
-app.error(async (error) => {
-  console.error('⚠️ Slack app error:', error);
-});
-
-// Wrap pattern detection in try-catch
-process.on('unhandledRejection', (error) => {
-  console.error('Unhandled promise rejection:', error);
-});

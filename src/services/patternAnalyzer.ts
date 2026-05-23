@@ -225,6 +225,9 @@ export async function analyzeUserHealth(userId: string): Promise<UserHealthMetri
     
     const paAlert = await detectPassiveAggressivePattern(userId);
     if (paAlert) alerts.push(paAlert);
+
+    const meetingAlert = await detectMeetingOverload(userId);
+    if (meetingAlert) alerts.push(meetingAlert);
     
     // Calculate health score (0-100)
     let healthScore = 100;
@@ -272,7 +275,7 @@ export async function analyzeTeamHealth(): Promise<UserHealthMetrics[]> {
   try {
     // Get all active users
     const query = `
-      SELECT DISTINCT user_id, username
+      SELECT DISTINCT user_id, username, last_seen
       FROM users
       WHERE last_seen >= NOW() - INTERVAL '7 days'
       ORDER BY last_seen DESC;
@@ -293,5 +296,47 @@ export async function analyzeTeamHealth(): Promise<UserHealthMetrics[]> {
   } catch (error) {
     console.error('Error analyzing team health:', error);
     return [];
+  }
+}
+
+import { getUserMeetingStats } from './mcpCalendar';
+
+// PATTERN 6: Meeting Overload Detection (MCP Integration)
+async function detectMeetingOverload(userId: string): Promise<Alert | null> {
+  try {
+    const meetingStats = await getUserMeetingStats();
+    
+    if (!meetingStats) return null;
+    
+    // Correlate meeting overload with Slack activity
+    const pattern = await getUserRecentPattern(userId, 7);
+    const messageCount = pattern.reduce((sum, day) => sum + parseInt(day.message_count), 0);
+    
+    // High meetings + low messages = overwhelmed
+    if (meetingStats.overloadScore >= 50) {
+      const severity = meetingStats.overloadScore >= 75 ? 'high' : 'medium';
+      
+      return {
+        type: 'meeting_overload',
+        severity,
+        description: `${meetingStats.totalHours} hours of meetings this week, ${meetingStats.backToBackCount} back-to-back`,
+        metric: `Overload score: ${meetingStats.overloadScore}/100`
+      };
+    }
+    
+    // Meeting overload causing engagement drop
+    if (meetingStats.totalHours > 20 && messageCount < 10) {
+      return {
+        type: 'meeting_overload',
+        severity: 'high',
+        description: 'Excessive meetings correlating with low Slack activity',
+        metric: `${meetingStats.totalHours}hrs meetings, ${messageCount} messages`
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error detecting meeting overload:', error);
+    return null;
   }
 }
