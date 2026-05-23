@@ -47,7 +47,7 @@ VibeCheck silently monitors Slack communication patterns and surfaces early warn
 
 ## Architecture
 
-![Architecture](docs/architecture.png)
+![Architecture](docs/architecture)
 
 ```
 Slack Workspace
