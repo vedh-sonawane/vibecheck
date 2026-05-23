@@ -32,6 +32,17 @@ VibeCheck silently monitors Slack communication patterns and surfaces early warn
 
 ### Screenshots
 
+![vibecheck](docs/vibecheck.png)
+
+![vibecheckalert](docs/vibecheckalert.png)
+
+![vibecheckdashboard](docs/vibecheckdashboard.png)
+
+![vibecheckteam](docs/vibecheckteam.png)
+
+![vibecheckuser](docs/vibecheckuser.png)
+
+
 **Individual health report:**
 - Health score out of 100
 - 7-day message activity
