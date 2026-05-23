@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import { storeUser, storeMessageMetadata } from './database/queries';
 import { getUserMessageHistory } from './services/rts';
 import { analyzeUserHealth } from './services/patternAnalyzer';
-import { buildUserHealthReport, buildTeamDashboard } from './services/dashboard';
+import { buildUserHealthReport, buildRichTeamDashboard } from './services/dashboard';
 import { createTeamHealthCanvas } from './services/canvasBuilder';
 import { sendManagerAlerts } from './services/managerAlerts';
 
@@ -44,7 +44,7 @@ app.command('/vibecheck', async ({ command, ack, respond, client }) => {
       });
 
     } else if (option === 'team') {
-      const dashboardBlocks = await buildTeamDashboard();
+      const dashboardBlocks = await buildRichTeamDashboard();
       await respond({ text: 'Team Health Dashboard', blocks: dashboardBlocks });
 
     } else {
