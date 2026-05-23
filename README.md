@@ -40,7 +40,6 @@ VibeCheck silently monitors Slack communication patterns and surfaces early warn
 ![vibecheckalert](docs/vibecheckalert.png)
 
 /vibecheck dashboard
-/vibecheck dashboard
 ![vibecheckdashboard](docs/vibecheckdashboard.png)
 
 /vibecheck team
