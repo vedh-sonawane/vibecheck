@@ -32,14 +32,21 @@ VibeCheck silently monitors Slack communication patterns and surfaces early warn
 
 ### Screenshots
 
+
+/vibecheck
 ![vibecheck](docs/vibecheck.png)
 
+/vibecheck-alert
 ![vibecheckalert](docs/vibecheckalert.png)
 
+/vibecheck dashboard
+/vibecheck dashboard
 ![vibecheckdashboard](docs/vibecheckdashboard.png)
 
+/vibecheck team
 ![vibecheckteam](docs/vibecheckteam.png)
 
+/vibecheck @user
 ![vibecheckuser](docs/vibecheckuser.png)
 
 
